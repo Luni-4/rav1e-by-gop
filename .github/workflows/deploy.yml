@@ -1,0 +1,93 @@
+name: deploy
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+
+  create-binaries:
+
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Install nasm
+      run: |
+        $NASM_VERSION="2.14.02"
+        $LINK="https://www.nasm.us/pub/nasm/releasebuilds/$NASM_VERSION/win64"
+        curl -LO "$LINK/nasm-$NASM_VERSION-win64.zip"
+        7z e -y "nasm-$NASM_VERSION-win64.zip" -o"C:\nasm"
+        echo "::add-path::C:\nasm"
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        profile: minimal
+        toolchain: stable
+        override: true
+
+    - name: Set environment variables
+      run: |
+        $VsPath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer"
+        echo "::add-path::$VsPath;C:\nasm"
+
+    - name: Set MSVC x86_64 linker path
+      run: |
+        $LinkGlob = "VC\Tools\MSVC\*\bin\Hostx64\x64"
+        $LinkPath = vswhere -latest -products * -find "$LinkGlob" |
+                    Select-Object -Last 1
+        echo "::add-path::$LinkPath"
+
+    - name: Build
+      run: |
+        cargo build --release
+
+    - name: Create zip
+      run: |
+        $METRICS_PATH="$Env:GITHUB_WORKSPACE\target\release"
+        7z a rav1e-by-gop.zip `
+            "$METRICS_PATH\rav1e-by-gop.exe"
+
+    - name: Upload binaries
+      uses: actions/upload-artifact@v2
+      with:
+        name: rav1e-by-gop-bins
+        path: rav1e-by-gop.zip
+
+  deploy:
+
+    needs: create-binaries
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - name: Download the zip
+      uses: actions/download-artifact@v2
+
+    - name: Unzip rav1e-by-gop Windows binaries
+      run: |
+        ls -la
+        unzip rav1e-by-gop-bins/rav1e-by-gop.zip -d rav1e-by-gop-bins
+
+    - name: Handle release data and files
+      id: data
+      run: |
+        VERSION=$(head -n 1 CHANGELOG.md | tr -d "## Version ")
+        echo "::set-output name=version::$VERSION"
+        tail -n +2 CHANGELOG.md | sed -e '/^$/,$d' > CHANGELOG.txt
+        strip rav1e-by-gop-bins/rav1e-by-gop.exe
+
+    - name: Create a release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Version ${{ steps.data.outputs.version }}
+        body_path: CHANGELOG.txt
+        files: |
+          rav1e-by-gop-bins/rav1e-by-gop.exe
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
